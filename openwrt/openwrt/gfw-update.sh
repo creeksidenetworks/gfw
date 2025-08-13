@@ -24,8 +24,8 @@ log() {
 
 # Ping both tunnels in the background and save results to temporary files
 echo "start pings"
-ping -I $gfw_tun1 -c $ping_count -i 10 $target_ip > ${TUN1_PING_FILE} &
-ping -I $gfw_tun2 -c $ping_count -i 10 $target_ip > ${TUN2_PING_FILE} &
+ping -I $gfw_tun1 -c $ping_count $target_ip > ${TUN1_PING_FILE} &
+ping -I $gfw_tun2 -c $ping_count $target_ip > ${TUN2_PING_FILE} &
 
 # Wait for both pings to complete
 wait
