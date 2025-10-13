@@ -1,7 +1,0 @@
-# please copy or create a link to /etc/crontabs/root file
-
-PATH="/usr/sbin:/usr/bin:/sbin:/bin"
-
-0   0 * * 0 /etc/config/gfw/update-gfw-list.sh
-*/2 * * * * /etc/config/gfw/gfw-update.sh
-*/2 * * * * /etc/config/gfw/wg-update.sh

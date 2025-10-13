@@ -1,6 +1,0 @@
-Address    = <your wg ip>/24
-PrivateKey = <your private key>
-PublicKey  = <peer public key>
-AllowedIPs = 0.0.0.0/0
-Endpoint   = <peer FQDN>:52800
-PersistentKeepalive = 25
