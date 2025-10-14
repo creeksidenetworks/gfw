@@ -2,8 +2,8 @@
 #!/bin/sh
 # (c) 2022-2025 Creekside Networks LLC, Jackson Tong
 # This script will update the wireguard peer endpoint if the peer uses a FQDN
-# for EdgeOS & VyOS 1.3.4
-
+# for EdgeOS & VyOS 1.3.4 and openwrt
+ 
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Configuration file path
@@ -28,11 +28,20 @@ log_message() {
 # Function to check if a string is a valid FQDN
 is_fqdn() {
     local fqdn="$1"
-    if [[ "$fqdn" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-        return 0
-    else
-        return 1
-    fi
+    # POSIX regex match using case
+    case "$fqdn" in
+        *.*)
+            # Check for at least one dot and valid TLD
+            if echo "$fqdn" | grep -Eq '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+                return 0
+            else
+                return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # Function to update the WireGuard peer endpoint
@@ -80,7 +89,7 @@ dns_lookup() {
             host -4 "$fqdn" | awk '/has IPv4 address/ { print $5; exit }'
             ;;
         *)
-            nslookup "$fqdn" | awk '/^Address(:| [0-9]+:)? / { print $2 }' | head -n 1
+            nslookup "$fqdn" | awk '/^Address [0-9]+: / { print $3; exit }'
             ;;
     esac
 }
@@ -187,10 +196,10 @@ main() {
     os=$(detect_os_type)
 
     # Select parser based on OS type
-    if [[ "$os" == "EdgeOS" ]]; then
+    if [ "$os" = "EdgeOS" ]; then
         echo "Detected OS: EdgeOS"
         peers=$(EdgeOS_Parse_Wireguard)
-    elif [[ "$os" == "OpenWrt" ]]; then
+    elif [ "$os" = "OpenWrt" ]; then
         echo "Detected OS: OpenWrt"
         peers=$(OpenWrt_Parse_Wireguard)
     else
@@ -198,28 +207,29 @@ main() {
         peers=$(VyOS_Parse_Wireguard)
     fi
 
-    if [[ -n "$peers" ]]; then
+    if [ -n "$peers" ]; then
         echo "$peers" | while IFS= read -r line; do
             interface=$(echo "$line" | awk '{print $1}')
             pubkey=$(echo "$line" | awk '{print $2}')
             description=$(echo "$line" | awk -F'"' '{print $2}')
             port=$(echo "$line" | awk '{print $NF}')
 
+            printf "Processing interface: %s, pubkey: %s, description: %s, port: %s\n" "$interface" "$pubkey" "$description" "$port"
+
             # Check if description is a valid FQDN
             if is_fqdn "$description"; then
                 # Perform DNS lookup for FQDN
                 new_ip=$(dns_lookup "$description" "$os")
-                #new_ip=$(nslookup "$description" | awk '/^Address(:| [0-9]+:)? / { print $2 }' | head -n 1)
 
-                # get currnet IP
+                # get current IP
                 current_ip=$(sudo wg show "$interface" endpoints | grep "$pubkey" | awk '{print $2}' | awk -F':' '{print $1}')
 
                 # Update if the new IP differs from the current one
-                if [[ -n $new_ip && $new_ip != $current_ip ]]; then
+                if [ -n "$new_ip" ] && [ "$new_ip" != "$current_ip" ]; then
                     update_peer_endpoint "$interface" "$pubkey" "$new_ip" "$port"
                     log_message "Updated $interface - $pubkey ($description) endpoint to $new_ip:$port (was $current_ip)"
                 else 
-                    echo "$interface" "-" "$pubkey" "$description:$port" "is currrent"
+                    echo "$interface" "-" "$pubkey" "$description:$port" "is current"
                 fi
             fi
         done
