@@ -1,0 +1,14 @@
+.DS_Store
+log
+ipxe/vmware/7.0U3n/*
+ipxe/vmware/8.0U3e/*
+!ipxe/vmware/7.0U3n/boot.cfg
+!ipxe/vmware/8.0U3e/boot.cfg
+ipxe/vyos/*
+!ipxe/vyos/vyos.ipxe
+wg25*.conf
+sdw-peers.conf
+sdw-keys.txt
+gfw/edgerouter/conf
+router/setup/strongswan/ca
+router/setup/strongswan/servers
