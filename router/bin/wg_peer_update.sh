@@ -61,6 +61,13 @@ update_peer_endpoint() {
 detect_os_type() {
     if [ -f /etc/openwrt_release ]; then
         os="OpenWrt"
+    elif [ -d /etc/wireguard ]; then
+        # Generic Linux with standard WireGuard config location
+        os="Linux"
+        if [ -f /etc/os-release ]; then
+            os_name=$(grep '^NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+            echo "Detected OS: $os_name (using /etc/wireguard configs)"
+        fi
     elif grep -q "VyOS" /etc/os-release 2>/dev/null; then
         os="VyOS"
         version=$(grep VERSION_ID /etc/os-release | awk -F'"' '{print $2}')
@@ -71,7 +78,7 @@ detect_os_type() {
     elif grep -q "EdgeRouter" /etc/version 2>/dev/null; then
         os="EdgeOS"
     else
-        echo "Error: Unsupported OS. Only VyOS 1.3.4 or EdgeOS (EdgeRouter) are supported."
+        echo "Error: Unsupported OS. WireGuard configs not found in /etc/wireguard and system is not VyOS, EdgeOS, or OpenWrt."
         exit 1
     fi
     echo "$os"
@@ -190,6 +197,81 @@ OpenWrt_Parse_Wireguard() {
     done
 }
 
+# Function to parse WireGuard peers from standard Linux config files (/etc/wireguard)
+Linux_Parse_Wireguard() {
+    # Look for .conf files in /etc/wireguard
+    if [ ! -d /etc/wireguard ]; then
+        echo "Warning: /etc/wireguard directory not found" >&2
+        return
+    fi
+
+    for conf_file in /etc/wireguard/*.conf; do
+        if [ ! -f "$conf_file" ]; then
+            continue
+        fi
+
+        # Extract interface name from filename (e.g., wg0.conf -> wg0)
+        interface=$(basename "$conf_file" .conf)
+
+        # Parse [Peer] sections in the config file
+        awk -v interface="$interface" '
+            BEGIN {
+                in_peer = 0
+                pubkey = ""
+                endpoint = ""
+            }
+            /^\[Peer\]/ {
+                # Output previous peer if we have the required fields
+                if (in_peer && pubkey != "" && endpoint != "") {
+                    split(endpoint, parts, ":")
+                    host = parts[1]
+                    port = parts[2]
+                    # Check if host contains a dot (likely FQDN or IP)
+                    if (host ~ /\./) {
+                        print interface, pubkey, "\"" host "\"", port
+                    }
+                }
+                in_peer = 1
+                pubkey = ""
+                endpoint = ""
+            }
+            in_peer && /^PublicKey/ {
+                sub(/^PublicKey[[:space:]]*=[[:space:]]*/, "")
+                gsub(/[[:space:]]/, "")
+                pubkey = $0
+            }
+            in_peer && /^Endpoint/ {
+                sub(/^Endpoint[[:space:]]*=[[:space:]]*/, "")
+                gsub(/[[:space:]]/, "")
+                endpoint = $0
+            }
+            /^\[/ && !/^\[Peer\]/ {
+                # Output current peer when entering a new non-Peer section
+                if (in_peer && pubkey != "" && endpoint != "") {
+                    split(endpoint, parts, ":")
+                    host = parts[1]
+                    port = parts[2]
+                    if (host ~ /\./) {
+                        print interface, pubkey, "\"" host "\"", port
+                    }
+                }
+                in_peer = 0
+            }
+            END {
+                # Output last peer
+                if (in_peer && pubkey != "" && endpoint != "") {
+                    split(endpoint, parts, ":")
+                    host = parts[1]
+                    port = parts[2]
+                    if (host ~ /\./) {
+                        print interface, pubkey, "\"" host "\"", port
+                    }
+                }
+            }
+        ' "$conf_file"
+    done
+}
+
 main() {
     echo "Starting WireGuard peer update process..."
 
@@ -202,6 +284,9 @@ main() {
     elif [ "$os" = "OpenWrt" ]; then
         echo "Detected OS: OpenWrt"
         peers=$(OpenWrt_Parse_Wireguard)
+    elif [ "$os" = "Linux" ]; then
+        # Generic Linux with /etc/wireguard configs
+        peers=$(Linux_Parse_Wireguard)
     else
         echo "Detected OS: VyOS"
         peers=$(VyOS_Parse_Wireguard)

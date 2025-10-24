@@ -322,7 +322,7 @@ main() {
     # Log interface status changes
     case "$PRIMARY_STATUS" in
         failed)
-            log_message "$PRIMARY_IF: Failed (${PRIMARY_LOSS}% loss), recovery count: 0/${RECOVERY_COUNT}"
+            log_message "$PRIMARY_IF: Failed (${PRIMARY_LOSS}% loss)"
             ;;
         recovering:*)
             RECOVERY_COUNT_VAL=$(echo "$PRIMARY_STATUS" | cut -d':' -f2)
@@ -338,7 +338,7 @@ main() {
 
     case "$SECONDARY_STATUS" in
         failed)
-            log_message "$SECONDARY_IF: Failed (${SECONDARY_LOSS}% loss), recovery count: 0/3"
+            log_message "$SECONDARY_IF: Failed (${SECONDARY_LOSS}% loss)"
             ;;
         recovering:*)
             RECOVERY_COUNT_VAL=$(echo "$SECONDARY_STATUS" | cut -d':' -f2)
