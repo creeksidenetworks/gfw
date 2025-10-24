@@ -7,28 +7,30 @@ export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Routing table to update
 GFW_ROUTING_TABLE="100"
+
 # Log file path
 LOG_FILE="/var/log/gfw.log"
+
 # State file to track interface recovery
 STATE_FILE="/var/run/gfw_state.txt"
+
 # interface switch decision threshold
 SW_THRESHOLD="10"
 LOSS_THRESHOLD="20"
-# Consecutive successful pings required for interface recovery
-RECOVERY_COUNT="5"
 
+# Consecutive successful pings required for interface recovery
 PING_COUNT=30
 PING_TARGET_IP="8.8.8.8"
-GFW_ROUTING_TABLE="100"
+RECOVERY_COUNT="5"
+
+# default interfaces
 PRIMARY_IF="wg252"
 SECONDARY_IF="wg253"
-BACKUP_IF="wg251"
-
+BACKUP_IF=""
 
 if [ ! -f "$LOG_FILE" ]; then
     sudo touch "$LOG_FILE"
 fi
-
 
 # Function to parse command line arguments
 parse_args() {
@@ -81,11 +83,7 @@ read_interface_state() {
 write_interface_state() {
     local interface=$1
     local count=$2
-    
-    if [ ! -f "$STATE_FILE" ]; then
-        sudo touch "$STATE_FILE"
-    fi
-    
+        
     # Remove old entry for this interface and add new one
     if grep -q "^${interface}:" "$STATE_FILE" 2>/dev/null; then
         sudo sed -i "/^${interface}:/d" "$STATE_FILE"
@@ -106,16 +104,22 @@ is_interface_ready() {
         success_count=$((success_count + 1))
         write_interface_state "$interface" "$success_count"
         
+        if [ "$success_count" -eq "$RECOVERY_COUNT" ]; then
+            log_message "$interface: Now available (${loss}% loss) after ${RECOVERY_COUNT} consecutive tests"
+        fi
+
         if [ "$success_count" -ge "$RECOVERY_COUNT" ]; then
             echo "ready"
             return 0
-        else
+        elif [ "$success_count" -lt "$RECOVERY_COUNT" ]; then
+            log_message "$interface: Recovering (${loss}% loss), recovery count: ${success_count}/${RECOVERY_COUNT}"
             echo "recovering:${success_count}"
             return 1
         fi
     else
         # Reset recovery count on failure
         write_interface_state "$interface" "0"
+        log_message "$interface: Failed (${loss}% loss)"
         echo "failed"
         return 1
     fi
@@ -153,12 +157,20 @@ delete_routes() {
 # Process the results
 get_loss_rate() {
     local result_file=$1
-    local loss=$(grep 'packet loss' "$result_file" | cut -d '%' -f 1 | awk '{print $NF}')
+    local loss=""
+
+    # Extract packet loss percentage
+    loss=$(grep 'packet loss' "$result_file" | cut -d % -f 1 | cut -d "," -f 3 | sed 's/^ *//')
+    # Convert to integer
+    loss=${loss%.*}   
+
     if [ -z "$loss" ]; then
-        echo "100"
-    else
-        echo "$loss"
+        loss="100"
     fi
+
+    #echo "$result_file" : "$loss" : "$(grep 'packet loss' "$result_file")" 
+
+    echo "$loss"
 }
 
 clean_and_exit(){
@@ -175,120 +187,60 @@ main() {
     TMP_DIR=$(mktemp -d)
     PRIMARY_RESULT_FILE="$TMP_DIR/primary_ping_result.txt"
     SECONDARY_RESULT_FILE="$TMP_DIR/secondary_ping_result.txt"
-    BACKUP_RESULT_FILE="$TMP_DIR/backup_ping_result.txt"
-
+ 
     # Print message indicating start of pings
-    if [ -n "$BACKUP_IF" ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') Ping test: ${PRIMARY_IF}, ${SECONDARY_IF}, ${BACKUP_IF}."
-    else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') Ping test: ${PRIMARY_IF}, ${SECONDARY_IF}."
-    fi  
+    echo "$(date '+%Y-%m-%d %H:%M:%S') Ping test: ${PRIMARY_IF}, ${SECONDARY_IF}."
+
+    # init state file if not exists
+    if [ ! -f "$STATE_FILE" ]; then
+        sudo touch "$STATE_FILE"
+        write_interface_state "$PRIMARY_IF" "$RECOVERY_COUNT"
+        write_interface_state "$SECONDARY_IF" "$RECOVERY_COUNT"
+    fi
 
     # Ping from each interface in the background and store the result files
     ping_from_interface "$PRIMARY_IF" "$PRIMARY_RESULT_FILE" &
     ping_from_interface "$SECONDARY_IF" "$SECONDARY_RESULT_FILE" &
-    ping_from_interface "$BACKUP_IF" "$BACKUP_RESULT_FILE" &
 
     # Wait for all background jobs to complete
     wait
 
     PRIMARY_LOSS=$(get_loss_rate "$PRIMARY_RESULT_FILE")
     SECONDARY_LOSS=$(get_loss_rate "$SECONDARY_RESULT_FILE")
-    BACKUP_LOSS=$(get_loss_rate "$BACKUP_RESULT_FILE")
 
     # Check interface readiness for primary and secondary
-    PRIMARY_STATUS=$(is_interface_ready "$PRIMARY_IF" "$PRIMARY_LOSS")
-    SECONDARY_STATUS=$(is_interface_ready "$SECONDARY_IF" "$SECONDARY_LOSS")
+    PRIMARY_STATUS=$(is_interface_ready "$PRIMARY_IF" "$PRIMARY_LOSS" | tail -1)
+    SECONDARY_STATUS=$(is_interface_ready "$SECONDARY_IF" "$SECONDARY_LOSS" | tail -1)
 
-    if [ -n "$BACKUP_IF" ]; then
-        echo "Ping results: $PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%, $BACKUP_IF: $BACKUP_LOSS%"
-    else
-        echo "Ping results: $PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%"
-    fi
+    echo "Ping results: $PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%"
 
     # Get current interface
     CURRENT_IF=$(sudo ip -4 -oneline route show table "$GFW_ROUTING_TABLE" | grep -o "dev.*" | awk '{print $2}')
-    DEFAULT_ROUTE=$(ip -4 -oneline route show default 0.0.0.0/0)
-    DEFAULT_IF=$(echo "$DEFAULT_ROUTE" | awk '/dev/ {for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')
-
-    # Determine which interfaces are actually available (passed RESUME_COUNTS threshold)
-    PRIMARY_READY=false
-    SECONDARY_READY=false
-    
-    if [ "$PRIMARY_STATUS" = "ready" ]; then
-        PRIMARY_READY=true
-    fi
-    
-    if [ "$SECONDARY_STATUS" = "ready" ]; then
-        SECONDARY_READY=true
-    fi
 
     # Make the interface switch decision by following rules
-    if [ "$PRIMARY_READY" = false ] && [ "$SECONDARY_READY" = false ]; then
-        # If both interfaces are not ready, then switch to backup or default route
-        if [ -n "$BACKUP_IF" ] && [ "$BACKUP_LOSS" -le "$LOSS_THRESHOLD" ]; then
+    if [ "$PRIMARY_STATUS" != "ready" ] && [ "$SECONDARY_STATUS" != "ready" ]; then
+        # If both interfaces are not ready, then switch to backup interface
+        # if no backup interface available, do nothing
+        if [ -n "$BACKUP_IF" ] ; then
             NEXT_IF="$BACKUP_IF"
+        elif [ "$PRIMARY_LOSS" -lt "$SECONDARY_LOSS" ]; then
+            NEXT_IF=$PRIMARY_IF
         else
-            NEXT_IF="$DEFAULT_IF"
+            NEXT_IF=$SECONDARY_IF
         fi
-    elif [ "$CURRENT_IF" = "$DEFAULT_IF" ] || [ -z "$CURRENT_IF" ] || [ "$CURRENT_IF" = "$BACKUP_IF" ]; then
-        # Switch from default or backup interface to best available interface
-        if [ "$PRIMARY_READY" = true ] && [ "$SECONDARY_READY" = true ]; then
-            # Both ready, choose the one with lower loss
-            if [ "$PRIMARY_LOSS" -le "$SECONDARY_LOSS" ]; then
-                NEXT_IF="$PRIMARY_IF"
-            else
-                NEXT_IF="$SECONDARY_IF"
-            fi
-        elif [ "$PRIMARY_READY" = true ]; then
-            NEXT_IF="$PRIMARY_IF"
-        elif [ "$SECONDARY_READY" = true ]; then
-            NEXT_IF="$SECONDARY_IF"
-        else
-            # Neither ready, stay on default/backup
-            NEXT_IF="$CURRENT_IF"
-        fi
-    elif [ "$PRIMARY_READY" = true ] && [ "$SECONDARY_READY" = true ] && [ "$PRIMARY_LOSS" -lt "$SW_THRESHOLD" ] && [ "$SECONDARY_LOSS" -lt "$SW_THRESHOLD" ]; then
-        # If both interfaces are good, and current is not default, then stay
-        NEXT_IF="$CURRENT_IF"
-    elif [ "$CURRENT_IF" = "$PRIMARY_IF" ] && [ "$PRIMARY_READY" = false ]; then
-        # Current primary is not ready, switch to secondary if ready
-        if [ "$SECONDARY_READY" = true ]; then
-            NEXT_IF="$SECONDARY_IF"
-        elif [ -n "$BACKUP_IF" ] && [ "$BACKUP_LOSS" -le "$LOSS_THRESHOLD" ]; then
-            NEXT_IF="$BACKUP_IF"
-        else
-            NEXT_IF="$DEFAULT_IF"
-        fi
-    elif [ "$CURRENT_IF" = "$SECONDARY_IF" ] && [ "$SECONDARY_READY" = false ]; then
-        # Current secondary is not ready, switch to primary if ready
-        if [ "$PRIMARY_READY" = true ]; then
-            NEXT_IF="$PRIMARY_IF"
-        elif [ -n "$BACKUP_IF" ] && [ "$BACKUP_LOSS" -le "$LOSS_THRESHOLD" ]; then
-            NEXT_IF="$BACKUP_IF"
-        else
-            NEXT_IF="$DEFAULT_IF"
-        fi
+    elif [ "$PRIMARY_STATUS" = "ready" ] && [ "$SECONDARY_STATUS" != "ready" ]; then
+        NEXT_IF="$PRIMARY_IF"
+    elif [ "$PRIMARY_STATUS" != "ready" ] && [ "$SECONDARY_STATUS" = "ready" ]; then
+        NEXT_IF="$SECONDARY_IF"
     else
-        # At least one interface is worse than stay zone, switch to best available interface
-        if [ "$PRIMARY_READY" = true ] && [ "$SECONDARY_READY" = true ]; then
-            if [ "$PRIMARY_LOSS" -le "$SECONDARY_LOSS" ]; then
-                NEXT_IF="$PRIMARY_IF"
-            else
-                NEXT_IF="$SECONDARY_IF"
-            fi
-        elif [ "$PRIMARY_READY" = true ]; then
+        if [ "$CURRENT_IF" = "$BACKUP_IF" ]; then
             NEXT_IF="$PRIMARY_IF"
-        elif [ "$SECONDARY_READY" = true ]; then
-            NEXT_IF="$SECONDARY_IF"
         else
             NEXT_IF="$CURRENT_IF"
         fi
     fi
 
-    if [ "$NEXT_IF" = "$CURRENT_IF" ]; then
-        echo "Stay with $CURRENT_IF"
-    elif [ "$NEXT_IF" = "$PRIMARY_IF" ]; then
+    if [ "$NEXT_IF" = "$PRIMARY_IF" ]; then
         delete_routes
         sudo ip route replace default dev "$PRIMARY_IF" table "$GFW_ROUTING_TABLE"
         sudo ip route replace "$PING_TARGET_IP" dev "$PRIMARY_IF"
@@ -301,56 +253,13 @@ main() {
         sudo ip route replace default dev "$BACKUP_IF" table "$GFW_ROUTING_TABLE"
         sudo ip route replace "$PING_TARGET_IP" dev "$BACKUP_IF"
     else
-        delete_routes
-        default_route=$(ip -4 -oneline route show default 0.0.0.0/0)
-        default_route_interface=$(echo "$default_route" | awk '/dev/ {for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')
-        new_route=$(echo "$default_route" | grep -o "via.*" | awk '{print $1 " " $2}')
-        new_route="$new_route $(echo "$default_route" | grep -o "dev.*" | awk '{print $1 " " $2}')"
-        sudo ip route replace default $new_route table "$GFW_ROUTING_TABLE"
-        sudo ip route replace "$PING_TARGET_IP" $new_route
+        echo "Stay with $CURRENT_IF"
     fi
 
     if [[ "$NEXT_IF" != "$CURRENT_IF" ]]; then
-        if [ -n "$BACKUP_IF" ]; then
-            log_message "Ping results: $PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%, $BACKUP_IF: $BACKUP_LOSS%"
-        else
-            log_message "Ping results: $PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%"
-        fi
+        log_message "$PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%"
         log_message "Interface switch decision: $CURRENT_IF -> $NEXT_IF"
     fi
-
-    # Log interface status changes
-    case "$PRIMARY_STATUS" in
-        failed)
-            log_message "$PRIMARY_IF: Failed (${PRIMARY_LOSS}% loss)"
-            ;;
-        recovering:*)
-            RECOVERY_COUNT_VAL=$(echo "$PRIMARY_STATUS" | cut -d':' -f2)
-            log_message "$PRIMARY_IF: Recovering (${PRIMARY_LOSS}% loss), recovery count: ${RECOVERY_COUNT_VAL}/${RECOVERY_COUNT}"
-            ;;
-        ready)
-            PRIMARY_COUNT=$(read_interface_state "$PRIMARY_IF")
-            if [ "$PRIMARY_COUNT" = "$RECOVERY_COUNT" ]; then
-                log_message "$PRIMARY_IF: Now available (${PRIMARY_LOSS}% loss), passed ${RECOVERY_COUNT} consecutive tests"
-            fi
-            ;;
-    esac
-
-    case "$SECONDARY_STATUS" in
-        failed)
-            log_message "$SECONDARY_IF: Failed (${SECONDARY_LOSS}% loss)"
-            ;;
-        recovering:*)
-            RECOVERY_COUNT_VAL=$(echo "$SECONDARY_STATUS" | cut -d':' -f2)
-            log_message "$SECONDARY_IF: Recovering (${SECONDARY_LOSS}% loss), recovery count: ${RECOVERY_COUNT_VAL}/${RECOVERY_COUNT}"
-            ;;
-        ready)
-            SECONDARY_COUNT=$(read_interface_state "$SECONDARY_IF")
-            if [ "$SECONDARY_COUNT" = "$RECOVERY_COUNT" ]; then
-                log_message "$SECONDARY_IF: Now available (${SECONDARY_LOSS}% loss), passed ${RECOVERY_COUNT} consecutive tests"
-            fi
-            ;;
-    esac
 
     clean_and_exit 0
 }

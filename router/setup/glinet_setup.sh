@@ -497,6 +497,18 @@ main() {
     echo "=== OpenWrt GFW Setup Configuration ==="
     echo
 
+    # Disable IPv6 globally
+    echo "Disabling IPv6 globally..."
+    if ! grep -q '^net.ipv6.conf.all.disable_ipv6=1' /etc/sysctl.conf 2>/dev/null; then
+        echo 'net.ipv6.conf.all.disable_ipv6=1' >> /etc/sysctl.conf
+    fi
+    if ! grep -q '^net.ipv6.conf.default.disable_ipv6=1' /etc/sysctl.conf 2>/dev/null; then
+        echo 'net.ipv6.conf.default.disable_ipv6=1' >> /etc/sysctl.conf
+    fi
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1
+    sysctl -w net.ipv6.conf.default.disable_ipv6=1
+    log_message "IPv6 disabled globally via sysctl.conf"
+
     # Initialize summary string
     SUMMARY=""
     

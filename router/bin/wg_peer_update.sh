@@ -61,22 +61,21 @@ update_peer_endpoint() {
 detect_os_type() {
     if [ -f /etc/openwrt_release ]; then
         os="OpenWrt"
-    elif [ -d /etc/wireguard ]; then
-        # Generic Linux with standard WireGuard config location
-        os="Linux"
-        if [ -f /etc/os-release ]; then
-            os_name=$(grep '^NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
-            echo "Detected OS: $os_name (using /etc/wireguard configs)"
-        fi
-    elif grep -q "VyOS" /etc/os-release 2>/dev/null; then
-        os="VyOS"
-        version=$(grep VERSION_ID /etc/os-release | awk -F'"' '{print $2}')
-        if [[ "$version" != "1.3.4" ]]; then
-            echo "Error: Only VyOS 1.3.4 is supported. Detected version: $version"
-            exit 1
-        fi
-    elif grep -q "EdgeRouter" /etc/version 2>/dev/null; then
+    elif [ -f /etc/version ] && grep -q "EdgeRouter" /etc/version 2>/dev/null; then
         os="EdgeOS"
+    elif [ -f /etc/os-release ]; then
+        if grep -q "VyOS" /etc/os-release 2>/dev/null; then
+            os="VyOS"
+            version=$(grep VERSION_ID /etc/os-release | awk -F'"' '{print $2}')
+            if [[ "$version" != "1.3.4" ]]; then
+                echo "Error: Only VyOS 1.3.4 is supported. Detected version: $version"
+                exit 1
+            fi
+        else
+            # Generic Linux with standard WireGuard config location
+            os="Linux"
+            #os_name=$(grep '^NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        fi
     else
         echo "Error: Unsupported OS. WireGuard configs not found in /etc/wireguard and system is not VyOS, EdgeOS, or OpenWrt."
         exit 1
@@ -96,7 +95,8 @@ dns_lookup() {
             host -4 "$fqdn" | awk '/has IPv4 address/ { print $5; exit }'
             ;;
         *)
-            nslookup "$fqdn" | awk '/^Address [0-9]+: / { print $3; exit }'
+            nslookup "$fqdn"  | grep "Address" | tail -1 | cut -d ":" -f 2 | awk '{$1=$1;print}'
+            #nslookup "$fqdn" | awk '/^Address [0-9]+: / { print $3; exit }'
             ;;
     esac
 }
@@ -274,8 +274,10 @@ Linux_Parse_Wireguard() {
 
 main() {
     echo "Starting WireGuard peer update process..."
+    echo "----------------------------------------"
 
     os=$(detect_os_type)
+    echo "Operating System detected: $os"
 
     # Select parser based on OS type
     if [ "$os" = "EdgeOS" ]; then
@@ -308,6 +310,8 @@ main() {
 
                 # get current IP
                 current_ip=$(sudo wg show "$interface" endpoints | grep "$pubkey" | awk '{print $2}' | awk -F':' '{print $1}')
+
+                echo "interface: $interface, pubkey: $pubkey, description: $description, resolved IP: $new_ip, current IP: $current_ip"
 
                 # Update if the new IP differs from the current one
                 if [ -n "$new_ip" ] && [ "$new_ip" != "$current_ip" ]; then
