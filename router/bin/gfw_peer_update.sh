@@ -15,7 +15,6 @@ LOG_FILE="/var/log/gfw.log"
 STATE_FILE="/var/run/gfw_state.txt"
 
 # interface switch decision threshold
-SW_THRESHOLD="10"
 LOSS_THRESHOLD="20"
 
 # Consecutive successful pings required for interface recovery
@@ -25,7 +24,9 @@ RECOVERY_COUNT="5"
 
 # default interfaces
 PRIMARY_IF="wg252"
+PRIMARY_LOSS=100
 SECONDARY_IF="wg253"
+SECONDARY_LOSS=100
 BACKUP_IF=""
 
 if [ ! -f "$LOG_FILE" ]; then
@@ -35,7 +36,6 @@ fi
 # Function to parse command line arguments
 parse_args() {
 
-    SUBJECT="$NAS_NAME"
     while getopts ":p:s:t:c:b:r:" opt; do
         case $opt in
             c)
@@ -106,20 +106,22 @@ is_interface_ready() {
         
         if [ "$success_count" -eq "$RECOVERY_COUNT" ]; then
             log_message "$interface: Now available (${loss}% loss) after ${RECOVERY_COUNT} consecutive tests"
-        fi
-
-        if [ "$success_count" -ge "$RECOVERY_COUNT" ]; then
+            echo "ready"
+            return 0
+        elif [ "$success_count" -gt "$RECOVERY_COUNT" ]; then
             echo "ready"
             return 0
         elif [ "$success_count" -lt "$RECOVERY_COUNT" ]; then
-            log_message "$interface: Recovering (${loss}% loss), recovery count: ${success_count}/${RECOVERY_COUNT}"
+            log_message "$interface: Recovering: ${success_count}/${RECOVERY_COUNT}, (${loss}% loss)"
             echo "recovering:${success_count}"
             return 1
         fi
     else
-        # Reset recovery count on failure
-        write_interface_state "$interface" "0"
-        log_message "$interface: Failed (${loss}% loss)"
+        if [ "$success_count" -gt 0 ]; then
+            # Reset recovery count on failure
+            write_interface_state "$interface" "0"
+            log_message "$interface: Failed (${loss}% loss)"
+        fi
         echo "failed"
         return 1
     fi
@@ -143,16 +145,11 @@ log_message() {
     # Ensure the log file does not exceed 1000 lines
     line_count=$(sudo wc -l < "$LOG_FILE")
     if [ "$line_count" -gt 1000 ]; then
-        sudo tail -n 500 "$LOG_FILE" | sudo tee "$LOG_FILE.tmp" > /dev/null
+        sudo tail -n 900 "$LOG_FILE" | sudo tee "$LOG_FILE.tmp" > /dev/null
         sudo mv "$LOG_FILE.tmp" "$LOG_FILE"
     fi
 }
 
-# Function to delete all routes in the specified table
-delete_routes() {
-    sudo ip route flush table "$GFW_ROUTING_TABLE"
-    echo "Flushed all routes in table $GFW_ROUTING_TABLE"
-}
 
 # Process the results
 get_loss_rate() {
@@ -176,7 +173,7 @@ get_loss_rate() {
 clean_and_exit(){
     # Clean up temp files
 
-    rm -rf $TMP_DIR
+    rm -rf "$TMP_DIR"
     [ $1 -eq 0 ] || printf 'Exit with Error code '$1'.\n'
     exit $1
 }
@@ -194,8 +191,8 @@ main() {
     # init state file if not exists
     if [ ! -f "$STATE_FILE" ]; then
         sudo touch "$STATE_FILE"
-        write_interface_state "$PRIMARY_IF" "$RECOVERY_COUNT"
-        write_interface_state "$SECONDARY_IF" "$RECOVERY_COUNT"
+        write_interface_state "$PRIMARY_IF" "0"
+        write_interface_state "$SECONDARY_IF" "0"
     fi
 
     # Ping from each interface in the background and store the result files
@@ -218,50 +215,45 @@ main() {
     CURRENT_IF=$(sudo ip -4 -oneline route show table "$GFW_ROUTING_TABLE" | grep -o "dev.*" | awk '{print $2}')
 
     # Make the interface switch decision by following rules
+    NEXT_IF="$CURRENT_IF"
     if [ "$PRIMARY_STATUS" != "ready" ] && [ "$SECONDARY_STATUS" != "ready" ]; then
         # If both interfaces are not ready, then switch to backup interface
         # if no backup interface available, do nothing
         if [ -n "$BACKUP_IF" ] ; then
             NEXT_IF="$BACKUP_IF"
         elif [ "$PRIMARY_LOSS" -lt "$SECONDARY_LOSS" ]; then
-            NEXT_IF=$PRIMARY_IF
+            NEXT_IF="$PRIMARY_IF"
         else
-            NEXT_IF=$SECONDARY_IF
+            NEXT_IF="$SECONDARY_IF"
         fi
     elif [ "$PRIMARY_STATUS" = "ready" ] && [ "$SECONDARY_STATUS" != "ready" ]; then
         NEXT_IF="$PRIMARY_IF"
     elif [ "$PRIMARY_STATUS" != "ready" ] && [ "$SECONDARY_STATUS" = "ready" ]; then
         NEXT_IF="$SECONDARY_IF"
-    else
-        if [ "$CURRENT_IF" = "$BACKUP_IF" ]; then
-            NEXT_IF="$PRIMARY_IF"
-        else
-            NEXT_IF="$CURRENT_IF"
-        fi
+    elif [ "$CURRENT_IF" = "$BACKUP_IF" ]; then
+        # Switch to primary if both are ready
+        NEXT_IF="$PRIMARY_IF"
     fi
 
-    if [ "$NEXT_IF" = "$PRIMARY_IF" ]; then
-        delete_routes
-        sudo ip route replace default dev "$PRIMARY_IF" table "$GFW_ROUTING_TABLE"
-        sudo ip route replace "$PING_TARGET_IP" dev "$PRIMARY_IF"
-    elif [ "$NEXT_IF" = "$SECONDARY_IF" ]; then
-        delete_routes
-        sudo ip route replace default dev "$SECONDARY_IF" table "$GFW_ROUTING_TABLE"
-        sudo ip route replace "$PING_TARGET_IP" dev "$SECONDARY_IF"
-    elif [ "$NEXT_IF" = "$BACKUP_IF" ]; then
-        delete_routes
-        sudo ip route replace default dev "$BACKUP_IF" table "$GFW_ROUTING_TABLE"
-        sudo ip route replace "$PING_TARGET_IP" dev "$BACKUP_IF"
+    if [ "$NEXT_IF" = "$CURRENT_IF" ]; then
+        echo "Staying on current interface: $CURRENT_IF"
     else
-        echo "Stay with $CURRENT_IF"
-    fi
+        # Add any additional commands needed to switch the gfw interface
+        echo "Switching gfw interface to $NEXT_IF"
 
-    if [[ "$NEXT_IF" != "$CURRENT_IF" ]]; then
-        log_message "$PRIMARY_IF: $PRIMARY_LOSS%, $SECONDARY_IF: $SECONDARY_LOSS%"
-        log_message "Interface switch decision: $CURRENT_IF -> $NEXT_IF"
+        # Delete all routes in the specified table first
+        sudo ip route flush table "$GFW_ROUTING_TABLE"
+
+        # Replace existing routes
+        sudo ip route replace default dev "$NEXT_IF" table "$GFW_ROUTING_TABLE"
+        sudo ip route replace "$PING_TARGET_IP" dev "$NEXT_IF"
+
+        # Log the switch decision
+        log_message "GFW interface switch: $CURRENT_IF -> $NEXT_IF (Primary: ${PRIMARY_LOSS}%, Secondary: ${SECONDARY_LOSS}%)"
     fi
 
     clean_and_exit 0
+
 }
 
 main "$@"
