@@ -20,14 +20,14 @@ LOSS_THRESHOLD="20"
 # Consecutive successful pings required for interface recovery
 PING_COUNT=30
 PING_TARGET_IP="8.8.8.8"
-RECOVERY_COUNT="5"
+RECOVERY_COUNT="3"
 
 # default interfaces
 PRIMARY_IF="wg252"
 PRIMARY_LOSS=100
 SECONDARY_IF="wg253"
 SECONDARY_LOSS=100
-BACKUP_IF=""
+BACKUP_IF="wg251"
 
 if [ ! -f "$LOG_FILE" ]; then
     sudo touch "$LOG_FILE"
@@ -213,6 +213,11 @@ main() {
 
     # Get current interface
     CURRENT_IF=$(sudo ip -4 -oneline route show table "$GFW_ROUTING_TABLE" | grep -o "dev.*" | awk '{print $2}')
+
+    # Check if backup interface exists, if not, set to empty
+    if ! ip link show "$BACKUP_IF" > /dev/null 2>&1; then
+        BACKUP_IF=""
+    fi
 
     # Make the interface switch decision by following rules
     NEXT_IF="$CURRENT_IF"
