@@ -243,9 +243,6 @@ main() {
     if [ "$NEXT_IF" = "$CURRENT_IF" ]; then
         echo "Staying on current interface: $CURRENT_IF"
     else
-        # Add any additional commands needed to switch the gfw interface
-        echo "Switching gfw interface to $NEXT_IF"
-
         # Delete all routes in the specified table first
         sudo ip route flush table "$GFW_ROUTING_TABLE"
 
@@ -254,7 +251,7 @@ main() {
         sudo ip route replace "$PING_TARGET_IP" dev "$NEXT_IF"
 
         # Log the switch decision
-        log_message "GFW interface switch: $CURRENT_IF -> $NEXT_IF (Primary: ${PRIMARY_LOSS}%, Secondary: ${SECONDARY_LOSS}%)"
+        log_message "Switching: $CURRENT_IF -> $NEXT_IF (Primary: ${PRIMARY_LOSS}%, Secondary: ${SECONDARY_LOSS}%)"
     fi
 
     clean_and_exit 0
