@@ -13,6 +13,8 @@ LOG_CAT="gfw"
 IPSET_NAME=LIBERTY_ADDRESS_GRP
 DNS_IP=8.8.8.8
 DNS_PORT=53
+CUSTOM_URL="https://raw.githubusercontent.com/creeksidenetworks/gfw/refs/heads/main/dnsmasq/dnsmasq_gfw_custom.conf"
+CHINA_URL="https://raw.githubusercontent.com/creeksidenetworks/gfw/refs/heads/main/dnsmasq/dnsmasq_china_custom.conf"
 
 # Check the operating system
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -67,13 +69,16 @@ clean_and_exit(){
 
 # Function to parse command line arguments
 parse_args() {
-    while getopts ":o:" opt; do
+    while getopts ":o:c:" opt; do
         case $opt in
             o)
                 CONF_PATH="$OPTARG"
                 ;;
+            c)
+                CUSTOM_URL="$OPTARG"
+                ;;
             \?)
-                echo "Usage: $0 [-o <output path>]"
+                echo "Usage: $0 [-o <output path>] [-c <gfw-custom-url>]"
                 exit 1
                 ;;
         esac
@@ -160,8 +165,12 @@ ipset=/\1/'$IPSET_NAME'#g' > $CONF_TMP_FILE
     #printf '\nConverting GfwList to '$OUT_TYPE'... ' && echo 'Done\n\n'
 
     # Download custom dnsmasq-ipset rules
-    echo "Downloading custom dnsmasq-ipset rules"
-    download_file "https://raw.githubusercontent.com/creeksidenetworks/toolbox/refs/heads/main/gfw/dnsmasq/dnsmasq_gfw_custom.conf" "${CONF_PATH}/dnsmasq_gfw_custom.conf"
+    echo "Downloading custom dnsmasq-ipset rules from: $CUSTOM_URL"
+    download_file "$CUSTOM_URL" "${CONF_PATH}/dnsmasq_gfw_custom.conf"
+
+    # Download custom dnsmasq-ipset rules
+    echo "Downloading China dnsmasq-ipset rules from: $CHINA_URL"
+    download_file "$CHINA_URL" "${CONF_PATH}/dnsmasq_china_custom.conf"
 
     if [ -f /etc/openwrt_release ]; then
         /etc/init.d/dnsmasq restart
