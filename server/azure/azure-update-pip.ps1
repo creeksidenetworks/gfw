@@ -4,16 +4,16 @@
 
 Connect-AzAccount -Identity
 
-Set-AzContext -Subscription 'Azure subscription 1'
+Set-AzContext -Subscription 'Subscription 1'
 
-$rgName = "my resource group name"
-$vmName = "my vm name"
-$nicName = "my nic name"
-$pipName = "my public ip name"
-$vnetName = "my vnet name"
-$vsubnetName = "my subnet name"
-$ipconfigName = "ipconfig1"
-$location = "My location"
+$rgName = "creekside"
+$vmName = "usa-router"
+$nicName = "vyos-cal-wan"
+$pipName = "usa-router-ip"
+$vnetName = "vnet-cal"
+$vsubnetName = "public"
+$ipconfigName = "Ipv4config"
+$location = "West US"
 
 ##unattach public IP on nic
 $nic = Get-AzNetworkInterface -Name $nicName -ResourceGroupName $rgName
